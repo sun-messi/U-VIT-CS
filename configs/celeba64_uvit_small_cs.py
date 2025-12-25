@@ -1,6 +1,6 @@
 import ml_collections
 
-# accelerate launch --multi_gpu --num_processes 6 --mixed_precision fp16 train_c.py --config=configs/celeba64_uvit_small_c.py
+# accelerate launch --multi_gpu --num_processes 6 --mixed_precision fp16 train_c.py --config=configs/celeba64_uvit_small_cs.py
 
 
 def d(**kwargs):
@@ -13,6 +13,7 @@ def get_config():
 
     config.seed = 1234
     config.pred = 'noise_pred'
+    config.sparsity_enabled = True
 
     # === Curriculum Learning Configuration ===
     # Stages define progressive training from high noise (easy) to low noise (hard)
@@ -22,23 +23,23 @@ def get_config():
         enabled=True,
         stages=[
             # Stage 1: High noise only (coarse structure)
-            d(t_min=0.5, t_max=1.0, n_steps=10000, name="stage1_coarse"),
+            # d(t_min=0.5, t_max=1.0, n_steps=10000, sparsity=0.8, name="stage1_coarse"),
             # Stage 2: Expand to medium noise
-            d(t_min=0.3, t_max=1.0, n_steps=10000, name="stage1_coarse"),
+            d(t_min=0.3, t_max=1.0, n_steps=10000, sparsity=0.8, name="stage1_coarse"),
             # Stage 3: Add fine details
-            d(t_min=0.2, t_max=1.0, n_steps=10000, name="stage3_fine"),
+            d(t_min=0.2, t_max=1.0, n_steps=10000, sparsity=0.7, name="stage3_fine"),
             # Stage 4: Finer details
-            d(t_min=0.1, t_max=1.0, n_steps=10000, name="stage4_finer"),
+            d(t_min=0.1, t_max=1.0, n_steps=10000, sparsity=0.5, name="stage4_finer"),
             # Stage 5: Full range (all timesteps)
-            d(t_min=0.05, t_max=1.0, n_steps=10000, name="stage5_full"),
+            d(t_min=0.07, t_max=1.0, n_steps=10000, sparsity=0.3, name="stage5_full"),
             # Stage 6: Finer details
-            d(t_min=0.03, t_max=1.0, n_steps=10000, name="stage6_finer"),
+            d(t_min=0.05, t_max=1.0, n_steps=10000, sparsity=0.1, name="stage6_finer"),
             # Stage 6: Finer details
-            d(t_min=0.02, t_max=1.0, n_steps=20000, name="stage7_finer"),
+            d(t_min=0.03, t_max=1.0, n_steps=20000, sparsity=0.0, name="stage7_finer"),
             # Stage 6: Finer details
-            d(t_min=0.01, t_max=1.0, n_steps=20000, name="stage8_finer"),
+            d(t_min=0.01, t_max=1.0, n_steps=20000, sparsity=0.0, name="stage8_finer"),
             # # Stage 5: Full range (all timesteps)
-            d(t_min=0.0, t_max=1.0, n_steps=100000, name="stage9_full"),
+            d(t_min=0.0, t_max=1.0, n_steps=100000, sparsity=0.0, name="stage9_full"),
         ]
     )
 

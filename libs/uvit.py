@@ -143,6 +143,7 @@ class UViT(nn.Module):
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
         self.num_classes = num_classes
         self.in_chans = in_chans
+        self.current_sparsity = 0.0
 
         self.patch_embed = PatchEmbed(patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim)
         num_patches = (img_size // patch_size) ** 2
@@ -200,6 +201,23 @@ class UViT(nn.Module):
 
     def forward(self, x, timesteps, y=None):
         x = self.patch_embed(x)
+        # Apply sparsity mask
+        if self.current_sparsity > 0:
+            active_dims = int(self.embed_dim * (1.0 - self.current_sparsity))
+            active_dims = max(1, min(active_dims, self.embed_dim))
+            mask = torch.zeros(self.embed_dim, device=x.device, dtype=x.dtype)
+            mask[:active_dims] = 1.0
+            x = x * mask
+
+            # Verification: check which dims are zero
+            if not hasattr(self, '_verified') or not self._verified:
+                zero_count = (x[0, 0, :] == 0).sum().item()
+                non_zero_count = (x[0, 0, :] != 0).sum().item()
+                print(f"[Sparsity Verification] sparsity={self.current_sparsity:.2f}, active_dims={active_dims}/{self.embed_dim}")
+                print(f"  Dims with zeros: {zero_count}, Dims with non-zeros: {non_zero_count}")
+                print(f"  First 5 active dims: {x[0, 0, :5].tolist()}")
+                print(f"  Last 5 frozen dims: {x[0, 0, -5:].tolist()}")
+                self._verified = True
         B, L, D = x.shape
 
         time_token = self.time_embed(timestep_embedding(timesteps, self.embed_dim))
@@ -222,6 +240,13 @@ class UViT(nn.Module):
             x = blk(x, skips.pop())
 
         x = self.norm(x)
+        # Apply sparsity mask again before decoder (same mask as patch_embed)
+        if self.current_sparsity > 0:
+            active_dims = int(self.embed_dim * (1.0 - self.current_sparsity))
+            active_dims = max(1, min(active_dims, self.embed_dim))
+            mask = torch.zeros(self.embed_dim, device=x.device, dtype=x.dtype)
+            mask[:active_dims] = 1.0
+            x = x * mask
         x = self.decoder_pred(x)
         assert x.size(1) == self.extras + L
         x = x[:, self.extras:, :]
