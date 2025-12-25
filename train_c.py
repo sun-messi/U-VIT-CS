@@ -1,6 +1,7 @@
 import sde
 import ml_collections
 import torch
+import torch.nn as nn
 from torch import multiprocessing as mp
 from datasets import get_dataset
 from torchvision.utils import make_grid, save_image
@@ -17,6 +18,58 @@ from absl import logging
 import builtins
 import os
 import wandb
+
+
+class EmbeddingSparsityMask(nn.Module):
+    """
+    Apply progressive sparsity mask to embeddings.
+
+    Masks are applied at two locations:
+    1. After PatchEmbed: (B, 256, 512) -> mask last dims to 0
+    2. Before decoder: (B, 256+extras, 512) -> mask last dims to 0
+
+    This creates hierarchical feature learning:
+    - Early stages (high noise, high sparsity): Only first K dims active
+    - Later stages (low noise, low sparsity): More dims activated
+    - Inference: All dims active (no mask)
+    """
+    def __init__(self, embed_dim):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.current_sparsity = 0.0
+        self.is_inference = False
+
+    def set_sparsity(self, sparsity):
+        """Update current sparsity level."""
+        self.current_sparsity = float(sparsity)
+
+    def set_inference_mode(self, is_inference):
+        """Set inference mode (disables masking)."""
+        self.is_inference = is_inference
+
+    def forward(self, x):
+        """
+        Apply sparsity mask to embeddings.
+
+        Args:
+            x: [..., embed_dim] embeddings
+
+        Returns:
+            Masked embeddings with same shape
+        """
+        # No masking during inference or when sparsity=0
+        if self.is_inference or self.current_sparsity == 0.0:
+            return x
+
+        # Calculate active dimensions
+        active_dims = int(self.embed_dim * (1.0 - self.current_sparsity))
+        active_dims = max(1, min(active_dims, self.embed_dim))
+
+        # Create and apply mask
+        mask = torch.zeros(self.embed_dim, device=x.device, dtype=x.dtype)
+        mask[:active_dims] = 1.0
+
+        return x * mask  # Zero out inactive dimensions
 
 
 def LSimple_curriculum(score_model, x0, pred='noise_pred', t_min=0.0, t_max=1.0, **kwargs):
@@ -77,6 +130,7 @@ def train(config):
     step_to_stage = {}
     current_t_min = 0.0
     current_t_max = 1.0
+    current_sparsity = 0.0
 
     if curriculum_enabled:
         cumulative_steps = 0
@@ -131,9 +185,12 @@ def train(config):
     if curriculum_enabled and accelerator.is_main_process:
         logging.info(f"[Curriculum] Enabled with {len(curriculum_config['stages'])} stages")
         for i, stage in enumerate(curriculum_config['stages']):
+            sparsity = stage.get('sparsity', 0.0)
+            active_dims = int(config.nnet.embed_dim * (1.0 - sparsity))
             logging.info(f"  Stage {i+1}: t_min={stage.get('t_min', 0.0):.2f}, "
                        f"t_max={stage.get('t_max', 1.0):.2f}, "
                        f"n_steps={stage.get('n_steps', 0)}, "
+                       f"sparsity={sparsity:.1f} (active={active_dims}/{config.nnet.embed_dim}), "
                        f"name={stage.get('name', 'unnamed')}")
     elif accelerator.is_main_process:
         logging.info("[Curriculum] Disabled (using standard training)")
@@ -141,6 +198,63 @@ def train(config):
     # set the score_model to train
     score_model = sde.ScoreModel(nnet, pred=config.pred, sde=sde.VPSDE())
     score_model_ema = sde.ScoreModel(nnet_ema, pred=config.pred, sde=sde.VPSDE())
+
+    # === Sparsity Mask Setup ===
+    embed_mask = EmbeddingSparsityMask(embed_dim=config.nnet.embed_dim).to(device)
+    embed_mask_ema = EmbeddingSparsityMask(embed_dim=config.nnet.embed_dim).to(device)
+
+    # Hook function to apply mask after PatchEmbed
+    def patch_embed_hook(module, input, output):
+        """Apply mask after patch embedding."""
+        if hasattr(module, '_sparsity_mask'):
+            masked_output = module._sparsity_mask(output)
+
+            # Debug: Print verification on first batch of first step
+            if hasattr(module, '_debug_printed') and not module._debug_printed:
+                sparsity = module._sparsity_mask.current_sparsity
+                if sparsity > 0:
+                    # Check how many zeros in last dimension
+                    B, L, D = masked_output.shape
+                    # Count zeros per embedding dimension across all patches
+                    zero_counts = (masked_output == 0).float().mean(dim=(0, 1))  # [D]
+                    num_zero_dims = (zero_counts > 0.99).sum().item()
+                    active_dims = int(D * (1.0 - sparsity))
+
+                    if accelerator.is_main_process:
+                        logging.info(f"\n{'='*60}")
+                        logging.info(f"[Sparsity Verification] PatchEmbed Output Shape: {masked_output.shape}")
+                        logging.info(f"  Expected active dims: {active_dims}/{D}")
+                        logging.info(f"  Actual zero dims: {num_zero_dims}/{D}")
+                        logging.info(f"  First 5 active dims mean: {masked_output[0, 0, :5].tolist()}")
+                        logging.info(f"  Last 5 frozen dims (should be 0): {masked_output[0, 0, -5:].tolist()}")
+                        logging.info(f"{'='*60}\n")
+                    module._debug_printed = True
+
+            return masked_output
+        return output
+
+    # Hook function to apply mask before decoder
+    def norm_hook(module, input, output):
+        """Apply mask before decoder (after final norm)."""
+        if hasattr(module, '_sparsity_mask'):
+            return module._sparsity_mask(output)
+        return output
+
+    # Register hooks and attach masks
+    nnet.patch_embed.register_forward_hook(patch_embed_hook)
+    nnet.patch_embed._sparsity_mask = embed_mask
+    nnet.patch_embed._debug_printed = False  # For debug printing
+    nnet.norm.register_forward_hook(norm_hook)
+    nnet.norm._sparsity_mask = embed_mask
+
+    nnet_ema.patch_embed.register_forward_hook(patch_embed_hook)
+    nnet_ema.patch_embed._sparsity_mask = embed_mask_ema
+    nnet_ema.patch_embed._debug_printed = False  # For debug printing
+    nnet_ema.norm.register_forward_hook(norm_hook)
+    nnet_ema.norm._sparsity_mask = embed_mask_ema
+
+    if accelerator.is_main_process:
+        logging.info(f"[Sparsity] Mask registered at PatchEmbed and norm (embed_dim={config.nnet.embed_dim})")
 
 
     def train_step(_batch):
@@ -169,6 +283,9 @@ def train(config):
 
 
     def eval_step(n_samples, sample_steps, algorithm):
+        # Disable sparsity mask during inference
+        embed_mask_ema.set_inference_mode(True)
+
         logging.info(f'eval_step: n_samples={n_samples}, sample_steps={sample_steps}, algorithm={algorithm}, '
                      f'mini_batch_size={config.sample.mini_batch_size}')
 
@@ -220,6 +337,9 @@ def train(config):
             _fid = torch.tensor(_fid, device=device)
             _fid = accelerator.reduce(_fid, reduction='sum')
 
+        # Re-enable training mode for sparsity mask
+        embed_mask_ema.set_inference_mode(False)
+
         return _fid.item()
 
     logging.info(f'Start fitting, step={train_state.step}, mixed_precision={config.mixed_precision}')
@@ -238,11 +358,24 @@ def train(config):
                 stage = curriculum_config['stages'][stage_idx]
                 current_t_min = stage.get('t_min', 0.0)
                 current_t_max = stage.get('t_max', 1.0)
+                current_sparsity = stage.get('sparsity', 0.0)
+
+                # Update sparsity masks
+                embed_mask.set_sparsity(current_sparsity)
+                embed_mask_ema.set_sparsity(current_sparsity)
+
+                # Reset debug flag to print verification for new stage
+                nnet.patch_embed._debug_printed = False
+                nnet_ema.patch_embed._debug_printed = False
+
+                # Calculate active dimensions
+                active_dims = int(config.nnet.embed_dim * (1.0 - current_sparsity))
 
                 if accelerator.is_main_process:
                     logging.info(f"\n{'='*60}")
                     logging.info(f"[Curriculum] Stage {stage_idx+1}/{len(curriculum_config['stages'])}: "
                                f"t_range=[{current_t_min:.2f}, {current_t_max:.2f}], "
+                               f"sparsity={current_sparsity:.1f} (active_dims={active_dims}/{config.nnet.embed_dim}), "
                                f"name={stage.get('name', 'unnamed')}")
                     logging.info(f"{'='*60}\n")
 
@@ -264,6 +397,9 @@ def train(config):
 
         if accelerator.is_main_process and train_state.step % config.train.eval_interval == 0:
             logging.info('Save a grid of images...')
+            # Disable sparsity mask during sampling
+            embed_mask_ema.set_inference_mode(True)
+
             x_init = torch.randn(100, *dataset.data_shape, device=device)
             if config.train.mode == 'uncond':
                 samples = sde.euler_maruyama(sde.ODE(score_model_ema), x_init=x_init, sample_steps=50)
@@ -275,6 +411,9 @@ def train(config):
             samples = make_grid(dataset.unpreprocess(samples), 10)
             save_image(samples, os.path.join(config.sample_dir, f'{train_state.step}.png'))
             wandb.log({'samples': wandb.Image(samples)}, step=train_state.step)
+
+            # Re-enable training mode
+            embed_mask_ema.set_inference_mode(False)
             torch.cuda.empty_cache()
         accelerator.wait_for_everyone()
 

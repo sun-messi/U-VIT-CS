@@ -50,8 +50,8 @@ def get_config():
         batch_size=126*2,  # 126 = 6 GPU × 21 per GPU
         mode='uncond',
         log_interval=100,
-        eval_interval=10,
-        save_interval=10,
+        eval_interval=5000,
+        save_interval=10000,
     )
 
     config.optimizer = d(
@@ -86,10 +86,10 @@ def get_config():
     )
 
     config.sample = d(
-        sample_steps=1000,
-        n_samples=1000,
-        mini_batch_size=500,
-        algorithm='euler_maruyama_sde',
+        sample_steps=50,
+        n_samples=100,
+        mini_batch_size=100,
+        algorithm='euler_maruyama_ode',
         path=''
     )
 
