@@ -24,6 +24,14 @@ def evaluate(config):
     logging.info(f'Process {accelerator.process_index} using device: {device}')
 
     config.mixed_precision = accelerator.mixed_precision
+
+    # Remove curriculum config before freezing (if present)
+    # FrozenConfigDict doesn't support dict/ConfigDict in lists
+    if 'curriculum' in config:
+        del config['curriculum']
+    if 'sparsity_enabled' in config:
+        del config['sparsity_enabled']
+
     config = ml_collections.FrozenConfigDict(config)
     if accelerator.is_main_process:
         utils.set_logger(log_level='info', fname=config.output_path)

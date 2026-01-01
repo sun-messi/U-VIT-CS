@@ -17,6 +17,8 @@ from absl import logging
 import builtins
 import os
 import wandb
+from datetime import datetime
+import shutil
 
 
 def train(config):
@@ -39,6 +41,10 @@ def train(config):
     if accelerator.is_main_process:
         os.makedirs(config.ckpt_root, exist_ok=True)
         os.makedirs(config.sample_dir, exist_ok=True)
+        # Save config file to workdir
+        config_file = get_config_file_path()
+        if config_file and os.path.exists(config_file):
+            shutil.copy2(config_file, os.path.join(config.workdir, os.path.basename(config_file)))
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
         wandb.init(dir=os.path.abspath(config.workdir), project=f'uvit_{config.dataset.name}', config=config.to_dict(),
@@ -220,6 +226,14 @@ def get_config_name():
             return Path(argv[i].split('=')[-1]).stem
 
 
+def get_config_file_path():
+    argv = sys.argv
+    for i in range(1, len(argv)):
+        if argv[i].startswith('--config='):
+            return argv[i].split('=')[-1]
+    return None
+
+
 def get_hparams():
     argv = sys.argv
     lst = []
@@ -241,9 +255,16 @@ def main(argv):
     config = FLAGS.config
     config.config_name = get_config_name()
     config.hparams = get_hparams()
-    config.workdir = FLAGS.workdir or os.path.join('workdir', config.config_name, config.hparams)
+    if FLAGS.workdir:
+        config.workdir = FLAGS.workdir
+    else:
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        config.workdir = os.path.join('workdir', config.config_name, f'{config.hparams}_{timestamp}')
     config.ckpt_root = os.path.join(config.workdir, 'ckpts')
     config.sample_dir = os.path.join(config.workdir, 'samples')
+    # Set eval_samples path if not already set
+    if not config.sample.path:
+        config.sample.path = os.path.join(config.workdir, 'eval_samples')
     train(config)
 
 

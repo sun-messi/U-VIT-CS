@@ -1,6 +1,6 @@
 import ml_collections
 
-# accelerate launch --multi_gpu --num_processes 6 --mixed_precision fp16 train_c.py --config=configs/celeba64_uvit_small_cs.py
+# nohup accelerate launch --multi_gpu --num_processes 6 --mixed_precision fp16 train_c.py --config=configs/celeba64_uvit_small_cs.py > training.log 2>&1 &
 
 
 def d(**kwargs):
@@ -25,21 +25,26 @@ def get_config():
             # Stage 1: High noise only (coarse structure)
             # d(t_min=0.5, t_max=1.0, n_steps=10000, sparsity=0.8, name="stage1_coarse"),
             # Stage 2: Expand to medium noise
-            d(t_min=0.3, t_max=1.0, n_steps=10000, sparsity=0.8, name="stage1_coarse"),
+            d(t_min=0.3, t_max=1.0, n_steps=10000, sparsity=0.3, name="stage1_coarse"),
             # Stage 3: Add fine details
-            d(t_min=0.2, t_max=1.0, n_steps=10000, sparsity=0.7, name="stage3_fine"),
+            d(t_min=0.2, t_max=1.0, n_steps=10000, sparsity=0.3, name="stage3_fine"),
             # Stage 4: Finer details
-            d(t_min=0.1, t_max=1.0, n_steps=10000, sparsity=0.5, name="stage4_finer"),
+            d(t_min=0.1, t_max=1.0, n_steps=20000, sparsity=0.3, name="stage4_finer"),
             # Stage 5: Full range (all timesteps)
-            d(t_min=0.07, t_max=1.0, n_steps=10000, sparsity=0.3, name="stage5_full"),
+            d(t_min=0.07, t_max=1.0, n_steps=10000, sparsity=0.2, name="stage5_full"),
             # Stage 6: Finer details
-            d(t_min=0.05, t_max=1.0, n_steps=10000, sparsity=0.1, name="stage6_finer"),
+            d(t_min=0.05, t_max=1.0, n_steps=10000, sparsity=0.2, name="stage6_finer"),
             # Stage 6: Finer details
-            d(t_min=0.03, t_max=1.0, n_steps=20000, sparsity=0.0, name="stage7_finer"),
+            d(t_min=0.03, t_max=1.0, n_steps=20000, sparsity=0.2, name="stage7_finer"),
             # Stage 6: Finer details
-            d(t_min=0.01, t_max=1.0, n_steps=20000, sparsity=0.0, name="stage8_finer"),
+            d(t_min=0.01, t_max=1.0, n_steps=20000, sparsity=0.2, name="stage8_finer"),
             # # Stage 5: Full range (all timesteps)
-            d(t_min=0.0, t_max=1.0, n_steps=100000, sparsity=0.0, name="stage9_full"),
+            d(t_min=0.0, t_max=1.0, n_steps=20000, sparsity=0.1, name="stage9_full"),
+            
+            d(t_min=0.0, t_max=1.0, n_steps=20000, sparsity=0.05, name="stage9_full"),
+            
+            d(t_min=0.0, t_max=1.0, n_steps=60000, sparsity=0.0, name="stage9_full"),
+
         ]
     )
 
@@ -71,7 +76,7 @@ def get_config():
         name='uvit',
         img_size=64,
         patch_size=4,
-        embed_dim=512,
+        embed_dim=256,
         depth=12,
         num_heads=8,
         mlp_ratio=4,
@@ -87,10 +92,10 @@ def get_config():
     )
 
     config.sample = d(
-        sample_steps=50,
-        n_samples=100,
-        mini_batch_size=100,
-        algorithm='euler_maruyama_ode',
+        sample_steps=50,  # ODE sampling steps
+        n_samples=2000,  # Number of samples for FID calculation
+        mini_batch_size=500,  # Batch size per GPU
+        algorithm='dpm_solver',  # Use ODE sampling
         path=''
     )
 

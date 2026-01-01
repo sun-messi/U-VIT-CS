@@ -199,6 +199,42 @@ class UViT(nn.Module):
     def no_weight_decay(self):
         return {'pos_embed'}
 
+    def get_channel_norms(self):
+        """
+        Get L2 norms for each output channel of patch_embed.proj.
+
+        Returns:
+            torch.Tensor: Channel norms of shape (out_channels,), i.e., (256,)
+        """
+        weight = self.patch_embed.proj.weight  # (256, 3, 4, 4)
+        weight_reshaped = weight.view(weight.size(0), -1)  # (256, 48)
+        channel_norms = weight_reshaped.norm(p=2, dim=1)  # (256,)
+        return channel_norms
+
+    def get_regularization_loss(self, lambda_reg):
+        """
+        Compute Group L1 regularization loss for patch_embed.proj layer.
+
+        Group L1 formula: L_reg = lambda * sum_c ||W[c,:,:,:]||_2
+        Where W is the Conv2d weight tensor of shape (out_channels, in_channels, kernel_h, kernel_w)
+
+        Args:
+            lambda_reg (float): Regularization strength coefficient
+
+        Returns:
+            torch.Tensor: Scalar regularization loss
+        """
+        if lambda_reg == 0.0:
+            return torch.tensor(0.0, device=self.patch_embed.proj.weight.device)
+
+        # Get channel norms
+        channel_norms = self.get_channel_norms()
+
+        # Sum over all channels and multiply by lambda
+        reg_loss = lambda_reg * channel_norms.sum()
+
+        return reg_loss
+
     def forward(self, x, timesteps, y=None):
         x = self.patch_embed(x)
         # Apply sparsity mask

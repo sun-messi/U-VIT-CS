@@ -1,6 +1,7 @@
 import ml_collections
 
 # accelerate launch --multi_gpu --num_processes 6 --mixed_precision fp16 train_c.py --config=configs/celeba64_uvit_small_c.py
+# nohup accelerate launch --multi_gpu --num_processes 6 --mixed_precision fp16 train_c.py --config=configs/celeba64_uvit_small_c.py > training.log 2>&1 &
 
 
 def d(**kwargs):
@@ -22,7 +23,7 @@ def get_config():
         enabled=True,
         stages=[
             # Stage 1: High noise only (coarse structure)
-            d(t_min=0.5, t_max=1.0, n_steps=10000, name="stage1_coarse"),
+            # d(t_min=0.5, t_max=1.0, n_steps=10000, name="stage1_coarse"),
             # Stage 2: Expand to medium noise
             d(t_min=0.3, t_max=1.0, n_steps=10000, name="stage1_coarse"),
             # Stage 3: Add fine details
@@ -70,7 +71,7 @@ def get_config():
         name='uvit',
         img_size=64,
         patch_size=4,
-        embed_dim=512,
+        embed_dim=256,
         depth=12,
         num_heads=8,
         mlp_ratio=4,
@@ -87,9 +88,9 @@ def get_config():
 
     config.sample = d(
         sample_steps=50,
-        n_samples=100,
-        mini_batch_size=100,
-        algorithm='euler_maruyama_ode',
+        n_samples=5000,
+        mini_batch_size=1000,
+        algorithm='dpm_solver',
         path=''
     )
 

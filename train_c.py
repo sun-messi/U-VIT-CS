@@ -18,6 +18,12 @@ from absl import logging
 import builtins
 import os
 import wandb
+import matplotlib
+from datetime import datetime
+matplotlib.use('Agg')  # Non-interactive backend
+import matplotlib.pyplot as plt
+import numpy as np
+import shutil
 
 
 class EmbeddingSparsityMask(nn.Module):
@@ -131,6 +137,7 @@ def train(config):
     current_t_min = 0.0
     current_t_max = 1.0
     current_sparsity = 0.0
+    current_lambda = 0.0  # Regularization strength
 
     if curriculum_enabled:
         cumulative_steps = 0
@@ -139,6 +146,11 @@ def train(config):
             for s in range(stage_steps):
                 step_to_stage[cumulative_steps + s] = stage_idx
             cumulative_steps += stage_steps
+
+        # Verify all stages have lambda_reg parameter
+        for stage in curriculum_config['stages']:
+            if 'lambda_reg' not in stage:
+                stage['lambda_reg'] = 0.0  # Default value
 
     # Remove curriculum from config before freezing to avoid FrozenConfigDict validation error
     if 'curriculum' in config:
@@ -152,6 +164,10 @@ def train(config):
     if accelerator.is_main_process:
         os.makedirs(config.ckpt_root, exist_ok=True)
         os.makedirs(config.sample_dir, exist_ok=True)
+        # Save config file to workdir
+        config_file = get_config_file_path()
+        if config_file and os.path.exists(config_file):
+            shutil.copy2(config_file, os.path.join(config.workdir, os.path.basename(config_file)))
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
         wandb.init(dir=os.path.abspath(config.workdir), project=f'uvit_{config.dataset.name}', config=config.to_dict(),
@@ -233,29 +249,96 @@ def train(config):
             return masked_output
         return output
 
-    # Hook function to apply mask before decoder
-    def norm_hook(module, input, output):
-        """Apply mask before decoder (after final norm)."""
-        if hasattr(module, '_sparsity_mask'):
-            return module._sparsity_mask(output)
-        return output
+    # Register hooks and attach masks (only at PatchEmbed)
+    # Handle DDP wrapper: access underlying module via .module if wrapped
+    _nnet = nnet.module if hasattr(nnet, 'module') else nnet
+    _nnet_ema = nnet_ema.module if hasattr(nnet_ema, 'module') else nnet_ema
 
-    # Register hooks and attach masks
-    nnet.patch_embed.register_forward_hook(patch_embed_hook)
-    nnet.patch_embed._sparsity_mask = embed_mask
-    nnet.patch_embed._debug_printed = False  # For debug printing
-    nnet.norm.register_forward_hook(norm_hook)
-    nnet.norm._sparsity_mask = embed_mask
+    _nnet.patch_embed.register_forward_hook(patch_embed_hook)
+    _nnet.patch_embed._sparsity_mask = embed_mask
+    _nnet.patch_embed._debug_printed = False  # For debug printing
 
-    nnet_ema.patch_embed.register_forward_hook(patch_embed_hook)
-    nnet_ema.patch_embed._sparsity_mask = embed_mask_ema
-    nnet_ema.patch_embed._debug_printed = False  # For debug printing
-    nnet_ema.norm.register_forward_hook(norm_hook)
-    nnet_ema.norm._sparsity_mask = embed_mask_ema
+    _nnet_ema.patch_embed.register_forward_hook(patch_embed_hook)
+    _nnet_ema.patch_embed._sparsity_mask = embed_mask_ema
+    _nnet_ema.patch_embed._debug_printed = False  # For debug printing
 
     if accelerator.is_main_process:
-        logging.info(f"[Sparsity] Mask registered at PatchEmbed and norm (embed_dim={config.nnet.embed_dim})")
+        logging.info(f"[Sparsity] Mask registered at PatchEmbed only (embed_dim={config.nnet.embed_dim})")
 
+        # Verify regularization target layer
+        weight = _nnet.patch_embed.proj.weight
+        logging.info(f"[Regularization] Target layer: patch_embed.proj")
+        logging.info(f"[Regularization] Weight shape: {weight.shape} (expected: (256, 3, 4, 4))")
+        logging.info(f"[Regularization] Total parameters: {weight.numel()}")
+
+        # Create directory for channel norm histograms
+        histogram_dir = os.path.join(config.workdir, 'channel_norms')
+        os.makedirs(histogram_dir, exist_ok=True)
+        logging.info(f"[Regularization] Channel norm histograms will be saved to {histogram_dir}")
+
+    def plot_channel_norms(model, step, save_dir, current_lambda_val):
+        """
+        Plot histogram of channel L2 norms for patch_embed.proj.
+
+        Args:
+            model: The neural network model (nnet or nnet_ema)
+            step: Current training step
+            save_dir: Directory to save the histogram
+            current_lambda_val: Current lambda regularization value
+        """
+        # Get channel norms (256 values)
+        channel_norms = model.get_channel_norms().detach().cpu().numpy()
+
+        # Create figure with histogram
+        fig, ax = plt.subplots(figsize=(10, 6))
+
+        # Plot histogram
+        n, bins, patches = ax.hist(channel_norms, bins=50, alpha=0.7, color='steelblue', edgecolor='black')
+
+        # Add statistics
+        mean_norm = channel_norms.mean()
+        std_norm = channel_norms.std()
+        min_norm = channel_norms.min()
+        max_norm = channel_norms.max()
+        num_zero = (channel_norms < 1e-6).sum()
+
+        # Add vertical lines for mean
+        ax.axvline(mean_norm, color='red', linestyle='--', linewidth=2, label=f'Mean: {mean_norm:.4f}')
+
+        # Title and labels
+        ax.set_title(f'Channel L2 Norms Distribution (Step {step}, λ={current_lambda_val:.6f})', fontsize=14, fontweight='bold')
+        ax.set_xlabel('L2 Norm ||W[c,:,:,:]||_2', fontsize=12)
+        ax.set_ylabel('Frequency', fontsize=12)
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+
+        # Add text box with statistics
+        stats_text = f'Statistics:\n'
+        stats_text += f'Mean: {mean_norm:.4f}\n'
+        stats_text += f'Std: {std_norm:.4f}\n'
+        stats_text += f'Min: {min_norm:.4f}\n'
+        stats_text += f'Max: {max_norm:.4f}\n'
+        stats_text += f'Near-zero (<1e-6): {num_zero}/256'
+
+        ax.text(0.98, 0.97, stats_text,
+                transform=ax.transAxes,
+                fontsize=10,
+                verticalalignment='top',
+                horizontalalignment='right',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+        plt.tight_layout()
+
+        # Save figure
+        save_path = os.path.join(save_dir, f'channel_norms_step{step}.png')
+        plt.savefig(save_path, dpi=150)
+        plt.close()
+
+        logging.info(f"[Regularization] Saved channel norm histogram to {save_path}")
+        logging.info(f"[Regularization] Stats - Mean: {mean_norm:.4f}, Std: {std_norm:.4f}, "
+                    f"Near-zero: {num_zero}/256")
+
+        return save_path
 
     def train_step(_batch):
         _metrics = dict()
@@ -271,8 +354,20 @@ def train(config):
         else:
             raise NotImplementedError(config.train.mode)
 
+        # Compute Group L1 regularization loss for patch_embed.proj
+        # Access underlying module for DDP compatibility
+        _model = nnet.module if hasattr(nnet, 'module') else nnet
+        reg_loss = _model.get_regularization_loss(current_lambda)
+
+        # Total loss = diffusion loss + regularization loss
+        total_loss = loss.mean() + reg_loss
+
+        # Record metrics
         _metrics['loss'] = accelerator.gather(loss.detach()).mean()
-        accelerator.backward(loss.mean())
+        _metrics['reg_loss'] = accelerator.gather(reg_loss.detach()).mean()
+        _metrics['total_loss'] = accelerator.gather(total_loss.detach()).mean()
+
+        accelerator.backward(total_loss)
         if 'grad_clip' in config and config.grad_clip > 0:
             accelerator.clip_grad_norm_(nnet.parameters(), max_norm=config.grad_clip)
         optimizer.step()
@@ -359,14 +454,17 @@ def train(config):
                 current_t_min = stage.get('t_min', 0.0)
                 current_t_max = stage.get('t_max', 1.0)
                 current_sparsity = stage.get('sparsity', 0.0)
+                current_lambda = stage.get('lambda_reg', 0.0)  # Read lambda_reg
 
-                # Update sparsity masks
+                # Update sparsity masks (kept for compatibility, disabled when sparsity=0.0)
                 embed_mask.set_sparsity(current_sparsity)
                 embed_mask_ema.set_sparsity(current_sparsity)
 
                 # Reset debug flag to print verification for new stage
-                nnet.patch_embed._debug_printed = False
-                nnet_ema.patch_embed._debug_printed = False
+                _model = nnet.module if hasattr(nnet, 'module') else nnet
+                _model_ema = nnet_ema.module if hasattr(nnet_ema, 'module') else nnet_ema
+                _model.patch_embed._debug_printed = False
+                _model_ema.patch_embed._debug_printed = False
 
                 # Calculate active dimensions
                 active_dims = int(config.nnet.embed_dim * (1.0 - current_sparsity))
@@ -376,6 +474,7 @@ def train(config):
                     logging.info(f"[Curriculum] Stage {stage_idx+1}/{len(curriculum_config['stages'])}: "
                                f"t_range=[{current_t_min:.2f}, {current_t_max:.2f}], "
                                f"sparsity={current_sparsity:.1f} (active_dims={active_dims}/{config.nnet.embed_dim}), "
+                               f"lambda_reg={current_lambda:.6f}, "
                                f"name={stage.get('name', 'unnamed')}")
                     logging.info(f"{'='*60}\n")
 
@@ -411,6 +510,12 @@ def train(config):
             samples = make_grid(dataset.unpreprocess(samples), 10)
             save_image(samples, os.path.join(config.sample_dir, f'{train_state.step}.png'))
             wandb.log({'samples': wandb.Image(samples)}, step=train_state.step)
+
+            # Plot channel norms histogram
+            logging.info('Plotting channel L2 norms histogram...')
+            _model_ema = nnet_ema.module if hasattr(nnet_ema, 'module') else nnet_ema
+            histogram_path = plot_channel_norms(_model_ema, train_state.step, histogram_dir, current_lambda)
+            wandb.log({'channel_norms_histogram': wandb.Image(histogram_path)}, step=train_state.step)
 
             # Re-enable training mode
             embed_mask_ema.set_inference_mode(False)
@@ -461,6 +566,14 @@ def get_config_name():
             return Path(argv[i].split('=')[-1]).stem
 
 
+def get_config_file_path():
+    argv = sys.argv
+    for i in range(1, len(argv)):
+        if argv[i].startswith('--config='):
+            return argv[i].split('=')[-1]
+    return None
+
+
 def get_hparams():
     argv = sys.argv
     lst = []
@@ -482,9 +595,16 @@ def main(argv):
     config = FLAGS.config
     config.config_name = get_config_name()
     config.hparams = get_hparams()
-    config.workdir = FLAGS.workdir or os.path.join('workdir', config.config_name, config.hparams)
+    if FLAGS.workdir:
+        config.workdir = FLAGS.workdir
+    else:
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        config.workdir = os.path.join('workdir', config.config_name, f'{config.hparams}_{timestamp}')
     config.ckpt_root = os.path.join(config.workdir, 'ckpts')
     config.sample_dir = os.path.join(config.workdir, 'samples')
+    # Set eval_samples path if not already set
+    if not config.sample.path:
+        config.sample.path = os.path.join(config.workdir, 'eval_samples')
     train(config)
 
 

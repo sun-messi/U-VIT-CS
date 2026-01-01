@@ -1,5 +1,7 @@
 import ml_collections
 
+# nohup accelerate launch --multi_gpu --num_processes 6 --mixed_precision fp16 train.py --config=configs/celeba64_uvit_small.py > training.log 2>&1 &
+
 
 def d(**kwargs):
     """Helper of creating a config dict."""
@@ -13,12 +15,12 @@ def get_config():
     config.pred = 'noise_pred'
 
     config.train = d(
-        n_steps=500000,
-        batch_size=128,
+        n_steps=200000,
+        batch_size=126*2,
         mode='uncond',
-        log_interval=10,
-        eval_interval=5,
-        save_interval=5,
+        log_interval=100,
+        eval_interval=5000,
+        save_interval=10000,
     )
 
     config.optimizer = d(
@@ -37,7 +39,7 @@ def get_config():
         name='uvit',
         img_size=64,
         patch_size=4,
-        embed_dim=512,
+        embed_dim=256,
         depth=12,
         num_heads=8,
         mlp_ratio=4,
@@ -54,9 +56,9 @@ def get_config():
 
     config.sample = d(
         sample_steps=50,
-        n_samples=100,
-        mini_batch_size=100,
-        algorithm='euler_maruyama_ode',
+        n_samples=5000,
+        mini_batch_size=1000,
+        algorithm='dpm_solver',
         path=''
     )
 
