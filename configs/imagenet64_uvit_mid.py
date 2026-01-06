@@ -13,17 +13,17 @@ def get_config():
     config.pred = 'noise_pred'
 
     config.train = d(
-        n_steps=300000,
-        batch_size=1024,
-        mode='cond',
+        n_steps=50000,
+        batch_size=126,
+        mode='uncond',
         log_interval=10,
-        eval_interval=5000,
-        save_interval=50000,
+        eval_interval=1000,
+        save_interval=2000,
     )
 
     config.optimizer = d(
         name='adamw',
-        lr=0.0003,
+        lr=0.0002,
         weight_decay=0.03,
         betas=(0.99, 0.99),
     )
@@ -37,26 +37,25 @@ def get_config():
         name='uvit',
         img_size=64,
         patch_size=4,
-        embed_dim=768,
-        depth=16,
-        num_heads=12,
+        embed_dim=256,
+        depth=12,
+        num_heads=8,
         mlp_ratio=4,
         qkv_bias=False,
         mlp_time_embed=False,
-        num_classes=1000,
-        use_checkpoint=True
+        num_classes=-1
     )
 
     config.dataset = d(
         name='imagenet',
-        path='assets/datasets/ImageNet',
+        path='assets/datasets/ImageNetV2',
         resolution=64,
     )
 
     config.sample = d(
         sample_steps=50,
-        n_samples=50000,
-        mini_batch_size=200,
+        n_samples=2000,
+        mini_batch_size=500,
         algorithm='dpm_solver',
         path=''
     )

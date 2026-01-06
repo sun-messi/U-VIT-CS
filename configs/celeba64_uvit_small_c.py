@@ -29,7 +29,7 @@ def get_config():
             # Stage 3: Add fine details
             d(t_min=0.2, t_max=1.0, n_steps=10000, name="stage3_fine"),
             # Stage 4: Finer details
-            d(t_min=0.1, t_max=1.0, n_steps=10000, name="stage4_finer"),
+            d(t_min=0.1, t_max=1.0, n_steps=20000, name="stage4_finer"),
             # Stage 5: Full range (all timesteps)
             d(t_min=0.05, t_max=1.0, n_steps=10000, name="stage5_full"),
             # Stage 6: Finer details

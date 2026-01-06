@@ -25,23 +25,23 @@ def get_config():
             # Stage 1: High noise only (coarse structure)
             # d(t_min=0.5, t_max=1.0, n_steps=10000, sparsity=0.8, name="stage1_coarse"),
             # Stage 2: Expand to medium noise
-            d(t_min=0.3, t_max=1.0, n_steps=10000, sparsity=0.3, name="stage1_coarse"),
+            d(t_min=0.3, t_max=1.0, n_steps=10000, sparsity=0.15, name="stage1_coarse"),
             # Stage 3: Add fine details
-            d(t_min=0.2, t_max=1.0, n_steps=10000, sparsity=0.3, name="stage3_fine"),
+            d(t_min=0.2, t_max=1.0, n_steps=10000, sparsity=0.15, name="stage3_fine"),
             # Stage 4: Finer details
-            d(t_min=0.1, t_max=1.0, n_steps=20000, sparsity=0.3, name="stage4_finer"),
+            d(t_min=0.1, t_max=1.0, n_steps=20000, sparsity=0.15, name="stage4_finer"),
             # Stage 5: Full range (all timesteps)
-            d(t_min=0.07, t_max=1.0, n_steps=10000, sparsity=0.2, name="stage5_full"),
+            d(t_min=0.07, t_max=1.0, n_steps=10000, sparsity=0.13, name="stage5_full"),
             # Stage 6: Finer details
-            d(t_min=0.05, t_max=1.0, n_steps=10000, sparsity=0.2, name="stage6_finer"),
+            d(t_min=0.05, t_max=1.0, n_steps=10000, sparsity=0.10, name="stage6_finer"),
             # Stage 6: Finer details
-            d(t_min=0.03, t_max=1.0, n_steps=20000, sparsity=0.2, name="stage7_finer"),
+            d(t_min=0.03, t_max=1.0, n_steps=20000, sparsity=0.08, name="stage7_finer"),
             # Stage 6: Finer details
-            d(t_min=0.01, t_max=1.0, n_steps=20000, sparsity=0.2, name="stage8_finer"),
+            d(t_min=0.01, t_max=1.0, n_steps=20000, sparsity=0.05, name="stage8_finer"),
             # # Stage 5: Full range (all timesteps)
-            d(t_min=0.0, t_max=1.0, n_steps=20000, sparsity=0.1, name="stage9_full"),
+            d(t_min=0.0, t_max=1.0, n_steps=20000, sparsity=0.0, name="stage9_full"),
             
-            d(t_min=0.0, t_max=1.0, n_steps=20000, sparsity=0.05, name="stage9_full"),
+            d(t_min=0.0, t_max=1.0, n_steps=20000, sparsity=0.0, name="stage9_full"),
             
             d(t_min=0.0, t_max=1.0, n_steps=60000, sparsity=0.0, name="stage9_full"),
 

@@ -53,10 +53,10 @@ def train(config):
         logging.info(config)
     else:
         utils.set_logger(log_level='error')
-        builtins.print = lambda *args, **kwargs: None
+        builtins.print = lambda *args: None
 
     dataset = get_dataset(**config.dataset)
-    assert os.path.exists(dataset.fid_stat)
+    # assert os.path.exists(dataset.fid_stat)  # Skip FID stat check
     train_dataset = dataset.get_split(split='train', labeled=config.train.mode == 'cond')
     train_dataset_loader = DataLoader(train_dataset, batch_size=mini_batch_size, shuffle=True, drop_last=True,
                                       num_workers=8, pin_memory=True, persistent_workers=True)
