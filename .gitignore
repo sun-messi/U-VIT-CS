@@ -25,3 +25,13 @@ assets/
 # OS
 .DS_Store
 Thumbs.db
+
+# Output directories
+workdir/
+analysis_outputs/
+eval_results/
+eval_samples/
+test_output/
+
+# Azure config
+.azad/
