@@ -52,8 +52,8 @@ def gray_to_rgb(x):
     return x.repeat(1, 3, 1, 1)
 
 
-def compute_jacobian(img, nnet, timestep, device, work_size=32):
-    """Compute Jacobian of denoiser at given image."""
+def compute_jacobian(img, nnet, timestep, device, work_size=32, chunk_size=64):
+    """Compute Jacobian of denoiser using chunked computation to save memory."""
     H, W = work_size, work_size
     N = H * W
     t = torch.tensor([timestep], device=device, dtype=torch.long)
@@ -65,18 +65,25 @@ def compute_jacobian(img, nnet, timestep, device, work_size=32):
 
     J = torch.zeros(N, N, device=device)
 
-    for i in tqdm(range(N), desc="Jacobian", leave=False):
-        input_img = img_small.clone().detach().requires_grad_(True)
-        input_64 = torch.nn.functional.interpolate(input_img, size=(64, 64), mode='bilinear')
-        rgb_input = gray_to_rgb(input_64)
+    # Process in chunks to balance speed and memory
+    n_chunks = (N + chunk_size - 1) // chunk_size
 
-        noise_pred = nnet(rgb_input, t)
-        gray_output = rgb_to_gray(noise_pred)
-        output_small = torch.nn.functional.interpolate(gray_output, size=(work_size, work_size), mode='bilinear')
-        output_flat = output_small.view(-1)
+    for chunk_idx in tqdm(range(n_chunks), desc="Jacobian chunks", leave=False):
+        start_idx = chunk_idx * chunk_size
+        end_idx = min((chunk_idx + 1) * chunk_size, N)
 
-        grad = torch.autograd.grad(output_flat[i], input_img, retain_graph=False)[0]
-        J[i, :] = grad.view(-1)
+        for i in range(start_idx, end_idx):
+            input_img = img_small.clone().detach().requires_grad_(True)
+            input_64 = torch.nn.functional.interpolate(input_img, size=(64, 64), mode='bilinear')
+            rgb_input = gray_to_rgb(input_64)
+
+            noise_pred = nnet(rgb_input, t)
+            gray_output = rgb_to_gray(noise_pred)
+            output_small = torch.nn.functional.interpolate(gray_output, size=(work_size, work_size), mode='bilinear')
+            output_flat = output_small.view(-1)
+
+            grad = torch.autograd.grad(output_flat[i], input_img, retain_graph=False)[0]
+            J[i, :] = grad.view(-1)
 
     return J
 
@@ -205,46 +212,51 @@ def main():
         plt.close()
         print(f"  Saved eigenvectors_{epoch//1000}k.png")
 
-    # Create a combined figure showing all epochs for λ_5 (most interesting)
-    print("\nCreating combined epoch comparison for λ_5...")
-
-    fig, axes = plt.subplots(n_methods, len(epochs), figsize=(len(epochs) * 2.5, n_methods * 2.8))
+    # Create combined figures for multiple λ values
+    lambda_indices = [1, 5, 10, 20, 30, 50, 70]
     method_names = ['baseline', 'C', 'CS']
 
-    for col_idx, epoch in enumerate(epochs):
-        for row_idx, method_name in enumerate(method_names):
-            ax = axes[row_idx, col_idx]
+    for eigvec_idx in lambda_indices:
+        print(f"\nCreating combined epoch comparison for λ_{eigvec_idx}...")
 
-            if epoch not in all_results or method_name not in all_results[epoch]:
+        fig, axes = plt.subplots(n_methods, len(epochs), figsize=(len(epochs) * 2.5, n_methods * 2.8))
+
+        for col_idx, epoch in enumerate(epochs):
+            for row_idx, method_name in enumerate(method_names):
+                ax = axes[row_idx, col_idx]
+
+                if epoch not in all_results or method_name not in all_results[epoch]:
+                    ax.axis('off')
+                    ax.text(0.5, 0.5, 'N/A', ha='center', va='center', transform=ax.transAxes)
+                    continue
+
+                data = all_results[epoch][method_name]
+                U = data['U']
+                S = data['S']
+
+                if eigvec_idx < U.shape[1]:
+                    eigvec = U[:, eigvec_idx].numpy().reshape(work_size, work_size)
+                    ax.imshow(-eigvec, cmap='RdBu', norm=colors.CenteredNorm())
+
+                    sv_val = S[eigvec_idx].item()
+                    if row_idx == 0:
+                        ax.set_title(f'{epoch//1000}k\nλ_{eigvec_idx}={sv_val:.3f}', fontsize=10)
+                    else:
+                        ax.set_title(f'λ_{eigvec_idx}={sv_val:.3f}', fontsize=10)
+                else:
+                    ax.text(0.5, 0.5, 'N/A', ha='center', va='center', transform=ax.transAxes)
+
                 ax.axis('off')
-                ax.text(0.5, 0.5, 'N/A', ha='center', va='center', transform=ax.transAxes)
-                continue
 
-            data = all_results[epoch][method_name]
-            U = data['U']
-            S = data['S']
+                if col_idx == 0:
+                    ax.annotate(method_name, xy=(-0.15, 0.5), xycoords='axes fraction',
+                               fontsize=12, fontweight='bold', ha='right', va='center')
 
-            eigvec_idx = 5
-            eigvec = U[:, eigvec_idx].numpy().reshape(work_size, work_size)
-            ax.imshow(-eigvec, cmap='RdBu', norm=colors.CenteredNorm())
-
-            sv_val = S[eigvec_idx].item()
-            if row_idx == 0:
-                ax.set_title(f'{epoch//1000}k\nλ_5={sv_val:.3f}', fontsize=10)
-            else:
-                ax.set_title(f'λ_5={sv_val:.3f}', fontsize=10)
-
-            ax.axis('off')
-
-            if col_idx == 0:
-                ax.annotate(method_name, xy=(-0.15, 0.5), xycoords='axes fraction',
-                           fontsize=12, fontweight='bold', ha='right', va='center')
-
-    plt.suptitle('λ_5 Eigenvector Evolution Across Training', fontsize=14, fontweight='bold')
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'eigenvector_lambda5_epochs.png'), dpi=150, bbox_inches='tight')
-    plt.close()
-    print("  Saved eigenvector_lambda5_epochs.png")
+        plt.suptitle(f'λ_{eigvec_idx} Eigenvector Evolution Across Training', fontsize=14, fontweight='bold')
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f'eigenvector_lambda{eigvec_idx}_epochs.png'), dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"  Saved eigenvector_lambda{eigvec_idx}_epochs.png")
 
     # Create eigenvalue spectrum comparison across epochs
     print("\nCreating eigenvalue spectrum comparison...")
