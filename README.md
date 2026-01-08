@@ -1,240 +1,226 @@
-## U-ViT<br> <sub><small>Official PyTorch implementation of [All are Worth Words: A ViT Backbone for Diffusion Models](https://arxiv.org/abs/2209.12152) (CVPR 2023)</small></sub>
+# Joint Noise-Sparsity Curriculum Learning for Diffusion Models
 
+This repository implements a **joint noise-sparsity curriculum learning** strategy for training diffusion models, built on top of [U-ViT](https://arxiv.org/abs/2209.12152) (CVPR 2023).
 
-💡Projects with U-ViT: 
-* [UniDiffuser](https://github.com/thu-ml/unidiffuser), a multi-modal large-scale diffusion model based on a 1B U-ViT, is open-sourced
-* [DPT](https://arxiv.org/abs/2302.10586), [code](https://github.com/ML-GSAI/DPT), [demo](https://ml-gsai.github.io/DPT-demo) a conditional diffusion model trained with 1 label/class with SOTA SSL generation and classification results on ImageNet
+<img src="uvit_final_three_way_comparison.png" alt="FID Comparison" width="600"/>
 
-<img src="uvit.png" alt="drawing" width="400"/>
+**Figure 1.** FID comparison between baseline (without curriculum) and our joint noise-sparsity curriculum on CelebA-64. The curriculum method achieves consistently lower FID scores after 120k steps. Bottom rows show generated samples at different training steps.
 
-Vision transformers (ViT) have shown promise in various vision tasks while the U-Net based on a convolutional neural network (CNN) remains dominant in diffusion models. 
-We design a simple and general ViT-based architecture (named U-ViT) for image generation with diffusion models. 
-U-ViT is characterized by treating all inputs including the time, condition and noisy image patches as tokens 
-and employing long skip connections between shallow and deep layers. 
-We evaluate U-ViT in unconditional and class-conditional image generation, 
-as well as text-to-image generation tasks, where U-ViT is comparable if not superior to a CNN-based U-Net of a similar size. 
-In particular, latent diffusion models with U-ViT achieve record-breaking FID scores of 2.29 in class-conditional image generation 
-on ImageNet 256x256, and 5.48 in text-to-image generation on MS-COCO, among methods without accessing 
-large external datasets during the training of generative models.
+<img src="joint_curriculum_final.png" alt="Curriculum Framework" width="800"/>
 
-Our results suggest that, for diffusion-based image modeling, the long skip connection is crucial while the down-sampling and up-sampling operators in CNN-based U-Net are not always necessary. We believe that U-ViT can provide insights for future research on backbones in diffusion models and benefit generative modeling on large scale cross-modality datasets.
+**Figure 2.** Joint noise-sparsity curriculum for diffusion training. Training data progressively expands from high-noise samples to a mixture of high-noise, low-noise, and clean data. The model capacity is increased accordingly by gradually reducing sparsity and activating more neurons.
 
---------------------
+---
 
+## Key Idea
 
+### Why Curriculum Learning for Diffusion Models?
 
-This codebase implements the transformer-based backbone 📌*U-ViT*📌 for diffusion models, as introduced in the [paper](https://arxiv.org/abs/2209.12152).
-U-ViT treats all inputs as tokens and employs long skip connections. *The long skip connections grealy promote the performance and the convergence speed*.
+Diffusion models learn to denoise images across multiple noise levels. Our theoretical analysis reveals that:
 
+1. **Feature Learning Order**: During training, dominant large-scale features (coarse structure) are learned before weaker fine-grained features (textures, details).
 
+2. **The Problem with Standard Training**: Without curriculum, neurons encoding fine-grained features inevitably develop **mixed representations** that entangle multiple feature directions. This causes distortions and local artifacts in generated samples.
 
-<img src="skip_im.png" alt="drawing" width="400"/>
+3. **Curriculum Solution**: By training with high noise first (where only coarse features are learnable), then progressively introducing lower noise levels, we enable **pure, disentangled feature representations**.
 
+### Joint Noise-Sparsity Curriculum
 
-💡This codebase contains:
-* An implementation of [U-ViT](libs/uvit.py) with optimized attention computation
-* Pretrained U-ViT models on common image generation benchmarks (CIFAR10, CelebA 64x64, ImageNet 64x64, ImageNet 256x256, ImageNet 512x512)
-* Efficient training scripts for [pixel-space diffusion models](train.py), [latent space diffusion models](train_ldm_discrete.py) and [text-to-image diffusion models](train_t2i_discrete.py)
-* Efficient evaluation scripts for [pixel-space diffusion models](eval.py) and [latent space diffusion models](eval_ldm_discrete.py) and [text-to-image diffusion models](eval_t2i_discrete.py)
-* A Colab notebook demo for sampling from U-ViT on ImageNet (FID=2.29) [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/baofff/U-ViT/blob/main/UViT_ImageNet_demo.ipynb)
+Our key insight: **Noise scheduling alone is insufficient**. To fully exploit the stage-wise nature of feature learning, model sparsity must be coordinated with the noise curriculum:
 
+| Training Stage | Noise Range | Model Sparsity | What is Learned |
+|----------------|-------------|----------------|-----------------|
+| Early | High noise only (t_min=0.3) | High sparsity (15%) | Coarse structure |
+| Middle | Expanding range (t_min→0.1) | Reducing sparsity | Medium details |
+| Late | Full range (t_min=0) | Full capacity (0%) | Fine-grained details |
 
-<img src="sample.png" alt="drawing" width="800"/>
+This coordinated design prevents early-stage dominant features from occupying all representational capacity, preserving room for weaker features to be learned purely in later stages.
 
+---
 
-💡This codebase supports useful techniques for efficient training and sampling of diffusion models:
-* Mixed precision training with the [huggingface accelerate](https://github.com/huggingface/accelerate) library (🥰automatically turned on)
-* Efficient attention computation with the [facebook xformers](https://github.com/facebookresearch/xformers) library (needs additional installation)
-* Gradient checkpointing trick, which reduces ~65% memory (🥰automatically turned on)
-* With these techniques, we are able to train our largest U-ViT-H on ImageNet at high resolutions such as 256x256 and 512x512 using a large batch size of 1024 with *only 2 A100*❗
+## Theoretical Foundation
 
+Our theoretical analysis proves:
 
-Training speed and memory of U-ViT-H/2 on ImageNet 256x256 using a batch size of 128 with a A100:
+### 1. Curriculum Training Induces Pure Feature Learning
 
-| mixed precision training | xformers | gradient checkpointing |  training speed   |    memory     |
-|:------------------------:|:--------:|:----------------------:|:-----------------:|:-------------:|
-|            ❌             |    ❌     |           ❌            |         -         | out of memory |
-|            ✔             |    ❌     |           ❌            | 0.97 steps/second |   78852 MB    |
-|            ✔             |    ✔     |           ❌            | 1.14 steps/second |   54324 MB    |
-|            ✔             |    ✔     |           ✔            | 0.87 steps/second |   18858 MB    |
+Under curriculum training, the network exhibits a natural **two-stage learning dynamics**:
+- **Stage I (high noise)**: Neurons align with dominant features M₁, achieving near-perfect alignment
+- **Stage II (low noise)**: A separate set of neurons aligns with fine-grained features M₂
 
+Each neuron specializes to a **single feature direction**, yielding pure representations.
 
+### 2. Non-Curriculum Training Produces Mixed Representations
 
-## Dependency
+Without curriculum, neurons encoding weak features M₂ inevitably capture dominant features M₁ simultaneously, resulting in **entangled representations**.
 
-```sh
-pip install torch torchvision --extra-index-url https://download.pytorch.org/whl/cu116  # install torch-1.13.1
+### 3. Generalization Gap in Low-Noise Regime
+
+| Noise Regime | Curriculum | Non-Curriculum |
+|--------------|------------|----------------|
+| High noise (τ large) | o(1) error | o(1) error |
+| Low noise (τ small) | **o(1) error** | **Θ(1) error** |
+
+The low-noise regime corresponds to the final steps of diffusion sampling where fine-grained details are generated. This explains why curriculum training particularly benefits sample quality.
+
+---
+
+## Results
+
+### FID on CelebA 64x64
+
+| Method | 100k steps | 120k steps | 160k steps | 200k steps |
+|--------|------------|------------|------------|------------|
+| Baseline (no curriculum) | 42.5 | 21.8 | 19.2 | 16.8 |
+| **Joint Curriculum (Ours)** | 40.2 | **15.1** | **13.4** | **13.1** |
+
+The curriculum method achieves **22% lower FID** at 200k steps (13.1 vs 16.8).
+
+---
+
+## Installation
+
+```bash
+pip install torch torchvision --extra-index-url https://download.pytorch.org/whl/cu116
 pip install accelerate==0.12.0 absl-py ml_collections einops wandb ftfy==6.1.1 transformers==4.23.1
 
-# xformers is optional, but it would greatly speed up the attention computation.
+# Optional: xformers for faster attention
 pip install -U xformers
 pip install -U --pre triton
 ```
 
-* This repo is based on [`timm==0.3.2`](https://github.com/rwightman/pytorch-image-models), for which a [fix](https://github.com/rwightman/pytorch-image-models/issues/420#issuecomment-776459842) is needed to work with PyTorch 1.8.1+. (Perhaps other versions also work, but I haven't tested it.)
-* We highly suggest install [xformers](https://github.com/facebookresearch/xformers), which would greatly speed up the attention computation for *both training and inference*.
-
-
-
-## Pretrained Models
-
-
-|                                                         Model                                                          |  FID  | training iterations | batch size |
-|:----------------------------------------------------------------------------------------------------------------------:|:-----:|:-------------------:|:----------:|
-|      [CIFAR10 (U-ViT-S/2)](https://drive.google.com/file/d/1yoYyuzR_hQYWU0mkTj659tMTnoCWCMv-/view?usp=share_link)      | 3.11  |        500K         |    128     |
-|   [CelebA 64x64 (U-ViT-S/4)](https://drive.google.com/file/d/13YpbRtlqF1HDBNLNRlKxLTbKbKeLE06C/view?usp=share_link)    | 2.87  |        500K         |    128     |
-|  [ImageNet 64x64 (U-ViT-M/4)](https://drive.google.com/file/d/1igVgRY7-A0ZV3XqdNcMGOnIGOxKr9azv/view?usp=share_link)   | 5.85  |        300K         |    1024    |
-|  [ImageNet 64x64 (U-ViT-L/4)](https://drive.google.com/file/d/19rmun-T7RwkNC1feEPWinIo-1JynpW7J/view?usp=share_link)   | 4.26  |        300K         |    1024    |
-| [ImageNet 256x256 (U-ViT-L/2)](https://drive.google.com/file/d/1w7T1hiwKODgkYyMH9Nc9JNUThbxFZgs3/view?usp=share_link)  | 3.40  |        300K         |    1024    |
-| [ImageNet 256x256 (U-ViT-H/2)](https://drive.google.com/file/d/13StUdrjaaSXjfqqF7M47BzPyhMAArQ4u/view?usp=share_link)  | 2.29  |        500K         |    1024    |
-| [ImageNet 512x512 (U-ViT-L/4)](https://drive.google.com/file/d/1mkj4aN2utHMBTWQX9l1nYue9vleL7ZSB/view?usp=share_link)  | 4.67  |        500K         |    1024    |
-| [ImageNet 512x512 (U-ViT-H/4)](https://drive.google.com/file/d/1uegr2o7cuKXtf2akWGAN2Vnlrtw5YKQq/view?usp=share_link)  | 4.05  |        500K         |    1024    |
-|      [MS-COCO (U-ViT-S/2)](https://drive.google.com/file/d/15JsZWRz2byYNU6K093et5e5Xqd4uwA8S/view?usp=share_link)      | 5.95  |         1M          |    256     |
-|   [MS-COCO (U-ViT-S/2, Deep)](https://drive.google.com/file/d/1gHRy8sn039Wy-iFL21wH8TiheHK8Ky71/view?usp=share_link)   | 5.48  |         1M          |    256     |
-
-
-
-## Preparation Before Training and Evaluation
-
-#### Autoencoder
-Download `stable-diffusion` directory from this [link](https://drive.google.com/drive/folders/1yo-XhqbPue3rp5P57j6QbA5QZx6KybvP?usp=sharing) (which contains image autoencoders converted from [Stable Diffusion](https://github.com/CompVis/stable-diffusion)). 
-Put the downloaded directory as `assets/stable-diffusion` in this codebase.
-The autoencoders are used in latent diffusion models.
-
-#### Data
-* ImageNet 64x64: Put the standard ImageNet dataset (which contains the `train` and `val` directory) to `assets/datasets/ImageNet`.
-* ImageNet 256x256 and ImageNet 512x512: Extract ImageNet features according to `scripts/extract_imagenet_feature.py`.
-* MS-COCO: Download COCO 2014 [training](http://images.cocodataset.org/zips/train2014.zip), [validation](http://images.cocodataset.org/zips/val2014.zip) data and [annotations](http://images.cocodataset.org/annotations/annotations_trainval2014.zip). Then extract their features according to `scripts/extract_mscoco_feature.py` `scripts/extract_test_prompt_feature.py` `scripts/extract_empty_feature.py`.
-
-#### Reference statistics for FID
-Download `fid_stats` directory from this [link](https://drive.google.com/drive/folders/1yo-XhqbPue3rp5P57j6QbA5QZx6KybvP?usp=sharing) (which contains reference statistics for FID).
-Put the downloaded directory as `assets/fid_stats` in this codebase.
-In addition to evaluation, these reference statistics are used to monitor FID during the training process.
+---
 
 ## Training
 
+### Baseline (Standard Training)
 
-
-We use the [huggingface accelerate](https://github.com/huggingface/accelerate) library to help train with distributed data parallel and mixed precision. The following is the training command:
-```sh
-# the training setting
-num_processes=2  # the number of gpus you have, e.g., 2
-train_script=train.py  # the train script, one of <train.py|train_ldm.py|train_ldm_discrete.py|train_t2i_discrete.py>
-                       # train.py: training on pixel space
-                       # train_ldm.py: training on latent space with continuous timesteps
-                       # train_ldm_discrete.py: training on latent space with discrete timesteps
-                       # train_t2i_discrete.py: text-to-image training on latent space
-config=configs/cifar10_uvit_small.py  # the training configuration
-                                      # you can change other hyperparameters by modifying the configuration file
-
-# launch training
-accelerate launch --multi_gpu --num_processes $num_processes --mixed_precision fp16 $train_script --config=$config
+```bash
+accelerate launch --multi_gpu --num_processes 4 --mixed_precision fp16 \
+    train.py --config=configs/celeba64_uvit_small.py
 ```
 
+### Joint Noise-Sparsity Curriculum (Ours)
 
-We provide all commands to reproduce U-ViT training in the paper:
-```sh
-# CIFAR10 (U-ViT-S/2)
-accelerate launch --multi_gpu --num_processes 4 --mixed_precision fp16 train.py --config=configs/cifar10_uvit_small.py
-
-# CelebA 64x64 (U-ViT-S/4)
-accelerate launch --multi_gpu --num_processes 4 --mixed_precision fp16 train.py --config=configs/celeba64_uvit_small.py 
-
-# ImageNet 64x64 (U-ViT-M/4)
-accelerate launch --multi_gpu --num_processes 8 --mixed_precision fp16 train.py --config=configs/imagenet64_uvit_mid.py
-
-# ImageNet 64x64 (U-ViT-L/4)
-accelerate launch --multi_gpu --num_processes 8 --mixed_precision fp16 train.py --config=configs/imagenet64_uvit_large.py
-
-# ImageNet 256x256 (U-ViT-L/2)
-accelerate launch --multi_gpu --num_processes 8 --mixed_precision fp16 train_ldm.py --config=configs/imagenet256_uvit_large.py
-
-# ImageNet 256x256 (U-ViT-H/2)
-accelerate launch --multi_gpu --num_processes 8 --mixed_precision fp16 train_ldm_discrete.py --config=configs/imagenet256_uvit_huge.py
-
-# ImageNet 512x512 (U-ViT-L/4)
-accelerate launch --multi_gpu --num_processes 8 --mixed_precision fp16 train_ldm.py --config=configs/imagenet512_uvit_large.py
-
-# ImageNet 512x512 (U-ViT-H/4)
-accelerate launch --multi_gpu --num_processes 8 --mixed_precision fp16 train_ldm_discrete.py --config=configs/imagenet512_uvit_huge.py
-
-# MS-COCO (U-ViT-S/2)
-accelerate launch --multi_gpu --num_processes 4 --mixed_precision fp16 train_t2i_discrete.py --config=configs/mscoco_uvit_small.py
-
-# MS-COCO (U-ViT-S/2, Deep)
-accelerate launch --multi_gpu --num_processes 4 --mixed_precision fp16 train_t2i_discrete.py --config=configs/mscoco_uvit_small.py --config.nnet.depth=16
+```bash
+accelerate launch --multi_gpu --num_processes 4 --mixed_precision fp16 \
+    train_c.py --config=configs/celeba64_uvit_small_cs.py
 ```
 
+### Configuration Files
 
+| Config | Description |
+|--------|-------------|
+| `configs/celeba64_uvit_small.py` | Baseline (standard training) |
+| `configs/celeba64_uvit_small_cs.py` | **Joint noise-sparsity curriculum** |
 
-## Evaluation (Compute FID)
+### Curriculum Stages (celeba64_uvit_small_cs.py)
 
-We use the [huggingface accelerate](https://github.com/huggingface/accelerate) library for efficient inference with mixed precision and multiple gpus. The following is the evaluation command:
-```sh
-# the evaluation setting
-num_processes=2  # the number of gpus you have, e.g., 2
-eval_script=eval.py  # the evaluation script, one of <eval.py|eval_ldm.py|eval_ldm_discrete.py|eval_t2i_discrete.py>
-                     # eval.py: for models trained with train.py (i.e., pixel space models)
-                     # eval_ldm.py: for models trained with train_ldm.py (i.e., latent space models with continuous timesteps)
-                     # eval_ldm_discrete.py: for models trained with train_ldm_discrete.py (i.e., latent space models with discrete timesteps)
-                     # eval_t2i_discrete.py: for models trained with train_t2i_discrete.py (i.e., text-to-image models on latent space)
-config=configs/cifar10_uvit_small.py  # the training configuration
+```python
+stages=[
+    # Stage 1-2: High noise, high sparsity (coarse structure)
+    d(t_min=0.3, t_max=1.0, n_steps=10000, sparsity=0.15),
+    d(t_min=0.2, t_max=1.0, n_steps=10000, sparsity=0.15),
 
-# launch evaluation
-accelerate launch --multi_gpu --num_processes $num_processes --mixed_precision fp16 eval_script --config=$config
-```
-The generated images are stored in a temperary directory, and will be deleted after evaluation. If you want to keep these images, set `--config.sample.path=/save/dir`.
+    # Stage 3-5: Expanding noise range, reducing sparsity
+    d(t_min=0.1, t_max=1.0, n_steps=20000, sparsity=0.15),
+    d(t_min=0.07, t_max=1.0, n_steps=10000, sparsity=0.13),
+    d(t_min=0.05, t_max=1.0, n_steps=10000, sparsity=0.10),
 
+    # Stage 6-8: Low noise, minimal sparsity (fine details)
+    d(t_min=0.03, t_max=1.0, n_steps=20000, sparsity=0.08),
+    d(t_min=0.01, t_max=1.0, n_steps=20000, sparsity=0.05),
 
-We provide all commands to reproduce FID results in the paper:
-```sh
-# CIFAR10 (U-ViT-S/2)
-accelerate launch --multi_gpu --num_processes 4 --mixed_precision fp16 eval.py --config=configs/cifar10_uvit_small.py --nnet_path=cifar10_uvit_small.pth
-
-# CelebA 64x64 (U-ViT-S/4)
-accelerate launch --multi_gpu --num_processes 4 --mixed_precision fp16 eval.py --config=configs/celeba64_uvit_small.py --nnet_path=celeba64_uvit_small.pth
-
-# ImageNet 64x64 (U-ViT-M/4)
-accelerate launch --multi_gpu --num_processes 8 --mixed_precision fp16 eval.py --config=configs/imagenet64_uvit_mid.py --nnet_path=imagenet64_uvit_mid.pth
-
-# ImageNet 64x64 (U-ViT-L/4)
-accelerate launch --multi_gpu --num_processes 8 --mixed_precision fp16 eval.py --config=configs/imagenet64_uvit_large.py --nnet_path=imagenet64_uvit_large.pth
-
-# ImageNet 256x256 (U-ViT-L/2)
-accelerate launch --multi_gpu --num_processes 8 --mixed_precision fp16 eval_ldm.py --config=configs/imagenet256_uvit_large.py --nnet_path=imagenet256_uvit_large.pth
-
-# ImageNet 256x256 (U-ViT-H/2)
-accelerate launch --multi_gpu --num_processes 8 --mixed_precision fp16 eval_ldm_discrete.py --config=configs/imagenet256_uvit_huge.py --nnet_path=imagenet256_uvit_huge.pth
-
-# ImageNet 512x512 (U-ViT-L/4)
-accelerate launch --multi_gpu --num_processes 8 --mixed_precision fp16 eval_ldm.py --config=configs/imagenet512_uvit_large.py --nnet_path=imagenet512_uvit_large.pth
-
-# ImageNet 512x512 (U-ViT-H/4)
-accelerate launch --multi_gpu --num_processes 8 --mixed_precision fp16 eval_ldm_discrete.py --config=configs/imagenet512_uvit_huge.py --nnet_path=imagenet512_uvit_huge.pth
-
-# MS-COCO (U-ViT-S/2)
-accelerate launch --multi_gpu --num_processes 4 --mixed_precision fp16 eval_t2i_discrete.py --config=configs/mscoco_uvit_small.py --nnet_path=mscoco_uvit_small.pth
-
-# MS-COCO (U-ViT-S/2, Deep)
-accelerate launch --multi_gpu --num_processes 4 --mixed_precision fp16 eval_t2i_discrete.py --config=configs/mscoco_uvit_small.py --config.nnet.depth=16 --nnet_path=mscoco_uvit_small_deep.pth
+    # Stage 9+: Full range, full capacity
+    d(t_min=0.0, t_max=1.0, n_steps=100000, sparsity=0.0),
+]
 ```
 
+---
 
+## Evaluation
 
+```bash
+accelerate launch --multi_gpu --num_processes 4 --mixed_precision fp16 \
+    eval.py --config=configs/celeba64_uvit_small_cs.py \
+    --nnet_path=workdir/celeba64_uvit_small_cs/ckpts/200000.ckpt/nnet.pth
+```
+
+---
+
+## Code Structure
+
+```
+.
+├── train.py                    # Standard training script
+├── train_c.py                  # Curriculum learning training script
+├── libs/
+│   └── uvit.py                 # U-ViT model with sparsity masking support
+├── configs/
+│   ├── celeba64_uvit_small.py      # Baseline config
+│   └── celeba64_uvit_small_cs.py   # Curriculum + Sparsity config
+├── sde.py                      # SDE definitions and loss functions
+└── analysis_outputs/           # Analysis and visualization scripts
+```
+
+---
+
+## Key Implementation Details
+
+### Sparsity Masking (libs/uvit.py)
+
+The embedding sparsity mask progressively activates dimensions during training:
+
+```python
+class EmbeddingSparsityMask:
+    def set_sparsity(self, sparsity_ratio):
+        # Mask = 1 for active dims, 0 for inactive
+        num_active = int(embed_dim * (1 - sparsity_ratio))
+        self.mask[:num_active] = 1.0
+        self.mask[num_active:] = 0.0
+```
+
+### Curriculum Loss (sde.py)
+
+The curriculum training samples timesteps from a restricted range:
+
+```python
+def LSimple_curriculum(img, nnet, sde, t_min=0.0, t_max=1.0):
+    # Sample t from [t_min, t_max] instead of [0, 1]
+    t = torch.rand(batch_size) * (t_max - t_min) + t_min
+    # Standard diffusion loss
+    ...
+```
+
+---
+
+## U-ViT Architecture
+
+This codebase is built on [U-ViT](https://arxiv.org/abs/2209.12152), a ViT-based backbone for diffusion models featuring:
+
+- **All inputs as tokens**: Time, condition, and noisy image patches are all treated as tokens
+- **Long skip connections**: Between shallow and deep layers for better gradient flow
+
+<img src="uvit.png" alt="U-ViT Architecture" width="400"/>
+
+---
 
 ## References
-If you find the code useful for your research, please consider citing
-```bib
-@inproceedings{bao2022all,
+
+```bibtex
+@inproceedings{bao2023all,
   title={All are Worth Words: A ViT Backbone for Diffusion Models},
   author={Bao, Fan and Nie, Shen and Xue, Kaiwen and Cao, Yue and Li, Chongxuan and Su, Hang and Zhu, Jun},
-  booktitle = {CVPR},
+  booktitle={CVPR},
   year={2023}
 }
 ```
 
-This implementation is based on
-* [Extended Analytic-DPM](https://github.com/baofff/Extended-Analytic-DPM) (provide the FID reference statistics on CIFAR10 and CelebA 64x64)
-* [guided-diffusion](https://github.com/openai/guided-diffusion) (provide the FID reference statistics on ImageNet)
-* [pytorch-fid](https://github.com/mseitzer/pytorch-fid) (provide the official implementation of FID to PyTorch)
-* [dpm-solver](https://github.com/LuChengTHU/dpm-solver) (provide the sampler)
+---
+
+## Acknowledgements
+
+This implementation is based on:
+- [U-ViT](https://github.com/baofff/U-ViT) - The original U-ViT codebase
+- [Extended Analytic-DPM](https://github.com/baofff/Extended-Analytic-DPM) - FID reference statistics
+- [dpm-solver](https://github.com/LuChengTHU/dpm-solver) - ODE sampler
